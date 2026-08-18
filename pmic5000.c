@@ -15,6 +15,7 @@
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
@@ -54,18 +55,6 @@ struct pmic5000_data {
 };
 
 /* hwmon */
-
-static int pmic5000_read_enable(struct regmap *regmap, long *val)
-{
-	u32 regval;
-	int err;
-
-	err = regmap_read(regmap, PMIC5000_REG_ADC_CONFIG, &regval);
-	if (err < 0)
-		return err;
-	*val = !!(regval & PMIC5000_ADC_ENABLE);
-	return 0;
-}
 
 static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long *val)
 {
@@ -225,14 +214,27 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
-static int pmic5000_write_enable(struct regmap *regmap, long val)
+static int pmic5000_write_interval(struct regmap *regmap, long val)
 {
-	if (val && val != 1)
-		return -EINVAL;
+	u32 regval;
+	switch (val) {
+		case 1:
+			regval = 0;
+			break;
+		case 2:
+			regval = 1;
+			break;
+		case 4:
+			regval = 2;
+			break;
+		case 8:
+			regval = 3;
+			break;
+		default:
+			return -EINVAL;
+	}
 
-	return regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
-				  PMIC5000_ADC_ENABLE,
-				  val ? PMIC5000_ADC_ENABLE : 0);
+	return regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, 0x03, regval);
 }
 
 static int pmic5000_write(struct device *dev, enum hwmon_sensor_types type,
@@ -240,10 +242,84 @@ static int pmic5000_write(struct device *dev, enum hwmon_sensor_types type,
 {
 	struct regmap *regmap = dev_get_drvdata(dev);
 
-	if (type == hwmon_power && attr == hwmon_power_enable)
-		return pmic5000_write_enable(regmap, val);
+	switch (type) {
+		case hwmon_chip:
+			return pmic5000_write_interval(regmap, val);
+		default:
+			return -EOPNOTSUPP;
+	}
+}
+
+static ssize_t pmic5000_read_enable(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct regmap *regmap = dev_get_drvdata(dev);
+	u32 regval;
+	int err;
+
+	err = regmap_read(regmap, PMIC5000_REG_ADC_CONFIG, &regval);
+	if (err < 0)
+		return err;
+
+	return sprintf(buf, "%d\n", !!(regval & PMIC5000_ADC_ENABLE));
+}
+
+static ssize_t pmic5000_write_enable(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct regmap *regmap = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
+
+	if (val && val != 1)
+		return -EINVAL;
+
+	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
+				  PMIC5000_ADC_ENABLE,
+				  val ? PMIC5000_ADC_ENABLE : 0);
+	if (err)
+		return err;
+
+	return count;
+}
+
+static ssize_t pmic5000_read_mode(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct regmap *regmap = dev_get_drvdata(dev);
+	u32 regval;
+	int err;
+
+	err = regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
+	if (err < 0)
+		return err;
+
+	if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
+		return sprintf(buf, "curr [power]\n");
 	else
-		return -EOPNOTSUPP;
+		return sprintf(buf, "[curr] power\n");
+}
+
+static ssize_t pmic5000_write_mode(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct regmap *regmap = dev_get_drvdata(dev);
+	long val, err;
+
+	if (strncmp(buf, "curr", 4) == 0)
+		val = 0;
+	else if (strncmp(buf, "power", 5) == 0)
+		val = 1;
+	else
+		return -EINVAL;
+
+	err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
+				  PMIC5000_CURR_OR_PWR,
+				  val ? PMIC5000_CURR_OR_PWR : 0);
+	if (err)
+		return err;
+
+	return count;
 }
 
 static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types type,
@@ -330,11 +406,30 @@ static const struct hwmon_chip_info pmic5000_chip_info = {
 	.info = pmic5000_info,
 };
 
+static SENSOR_DEVICE_ATTR(enable, 0664, pmic5000_read_enable, pmic5000_write_enable, 0);
+static SENSOR_DEVICE_ATTR(mode, 0664, pmic5000_read_mode, pmic5000_write_mode, 0);
+
+static struct attribute *pmic5000_attrs[] = {
+	&sensor_dev_attr_enable.dev_attr.attr,
+	&sensor_dev_attr_mode.dev_attr.attr,
+	NULL
+};
+
+static const struct attribute_group pmic5000_attr_group = {
+	.attrs = pmic5000_attrs,
+};
+
+static const struct attribute_group *pmic5000_attr_groups[] = {
+	&pmic5000_attr_group,
+	NULL
+};
+
 /* regmap */
 
 static bool pmic5000_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case PMIC5000_REG_CURR_OR_PWR:
 	case PMIC5000_REG_ADC_CONFIG:
 		return true;
 	default:
@@ -431,7 +526,7 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "pmic5000",
 							 regmap, &pmic5000_chip_info,
-							 NULL);
+							 pmic5000_attr_groups);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
