@@ -38,26 +38,22 @@
 #define PMIC5000_OUTPUT_SELECT		BIT(1)
 #define PMIC5000_CURR_OR_PWR		BIT(6)
 #define PMIC5000_ADC_ENABLE		BIT(7)
+#define PMIC5000_ADC_SELECT_MASK	GENMASK(6, 3)
 
-/* 125 mW */
+/* 125 mW multiplier */
 #define PMIC5000_POWER_UNIT		125000
+/* 125 mA multiplier */
 #define PMIC5000_CURR_UNIT		125
+/* mV multipliers */
+#define PMIC5000_VOLT_UNIT		15
+#define PMIC5000_VINBULK_UNIT		70
+#define PMIC5000_VBIAS_UNIT		25
 
 struct pmic5000_data {
 	struct regmap *regmap;
 };
 
 /* hwmon */
-
-static int pmic5000_val_from_reg(u32 reg)
-{
-	return reg * PMIC5000_POWER_UNIT;
-}
-
-static int pmic5000_curr_from_reg(u32 reg)
-{
-	return reg * PMIC5000_CURR_UNIT;
-}
 
 static int pmic5000_read_enable(struct regmap *regmap, long *val)
 {
@@ -68,39 +64,6 @@ static int pmic5000_read_enable(struct regmap *regmap, long *val)
 	if (err < 0)
 		return err;
 	*val = !!(regval & PMIC5000_ADC_ENABLE);
-	return 0;
-}
-
-static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, long *val)
-{
-	int reg, err;
-	u32 regval;
-
-	if (attr != hwmon_power_input)
-		return -EOPNOTSUPP;
-
-	switch (channel) {
-	case 0:
-		reg = PMIC5000_REG_SWA_POWER;
-		break;
-	case 1:
-		reg = PMIC5000_REG_SWB_POWER;
-		break;
-	case 2:
-		reg = PMIC5000_REG_SWC_POWER;
-		break;
-	case 3:
-		reg = PMIC5000_REG_SWD_POWER;
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	err = regmap_read(regmap, reg, &regval);
-	if (err)
-		return err;
-
-	*val = pmic5000_val_from_reg(regval);
 	return 0;
 }
 
@@ -153,7 +116,78 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long
 	if (err)
 		return err;
 
-	*val = pmic5000_curr_from_reg(regval) >> shift;
+	*val = regval * PMIC5000_CURR_UNIT >> shift;
+	return 0;
+}
+
+static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, long *val)
+{
+	int reg, err;
+	u32 regval;
+
+	if (attr != hwmon_power_input)
+		return -EOPNOTSUPP;
+
+	switch (channel) {
+	case 0:
+		reg = PMIC5000_REG_SWA_POWER;
+		break;
+	case 1:
+		reg = PMIC5000_REG_SWB_POWER;
+		break;
+	case 2:
+		reg = PMIC5000_REG_SWC_POWER;
+		break;
+	case 3:
+		reg = PMIC5000_REG_SWD_POWER;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	err = regmap_read(regmap, reg, &regval);
+	if (err)
+		return err;
+
+	*val = regval * PMIC5000_POWER_UNIT;
+	return 0;
+}
+
+static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel, long *val)
+{
+	int err, mult;
+	u32 regval;
+
+	if (attr != hwmon_in_input)
+		return -EOPNOTSUPP;
+		
+	if (channel < 0 || channel > 9 || channel == 4)
+		return -EOPNOTSUPP;
+
+	switch (channel) {
+	case 5:
+		mult = PMIC5000_VINBULK_UNIT;
+		break;
+	case 7:
+		mult = PMIC5000_VBIAS_UNIT;
+		break;
+	default:
+		mult = PMIC5000_VOLT_UNIT;
+		break;
+	}
+
+	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, PMIC5000_ADC_SELECT_MASK, channel << 3);
+	if (err)
+		return err;
+
+	/* The host shall wait minimum of 9 ms delay after the input selection for ADC readout and the actual readout */
+	udelay(9000);
+
+	err = regmap_read(regmap, PMIC5000_REG_ADC_VOLTAGE, &regval);
+	if (err)
+		return err;
+
+	*val = regval * mult;
 	return 0;
 }
 
@@ -180,10 +214,12 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 	switch (type) {
 		case hwmon_chip:
 			return pmic5000_read_interval(regmap, attr, val);
-		case hwmon_power:
-			return pmic5000_read_power(regmap, attr, channel, val);
+		case hwmon_in:
+			return pmic5000_read_adc(regmap, attr, channel, val);
 		case hwmon_curr:
 			return pmic5000_read_curr(regmap, attr, channel, val);
+		case hwmon_power:
+			return pmic5000_read_power(regmap, attr, channel, val);
 		default:
 			return -EOPNOTSUPP;
 	}
@@ -219,6 +255,14 @@ static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types typ
 	case hwmon_chip:
 		if (attr == hwmon_chip_update_interval)
 			return 0644;
+		break;
+	case hwmon_in:
+		if (attr == hwmon_in_input) {
+			if (channel != 4)
+				return 0444;
+			else
+				return 0;
+		}
 		break;
 	case hwmon_power:
 		if (attr == hwmon_power_input) {
@@ -260,6 +304,10 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 
 static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
+	HWMON_CHANNEL_INFO(in,
+			   HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT,
+			   HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT,
+			   HWMON_I_INPUT, HWMON_I_INPUT),
 	HWMON_CHANNEL_INFO(curr,
 			   HWMON_C_INPUT | HWMON_C_CRIT,
 			   HWMON_C_INPUT | HWMON_C_CRIT,
