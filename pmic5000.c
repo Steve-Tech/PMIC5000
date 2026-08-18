@@ -13,12 +13,13 @@
 #include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/err.h>
-#include <linux/i2c.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
+#include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
+#include <linux/units.h>
 
 /* PMIC5000 registers. */
 // clang-format off
@@ -31,26 +32,41 @@
 #define PMIC5000_REG_SWC_POWER		0x0E
 #define PMIC5000_REG_SWD_POWER		0x0F
 #define PMIC5000_REG_OUTPUT_SELECT	0x1A
-#define PMIC5000_REG_CURR_OR_PWR	0x1B
+	#define PMIC5000_OUTPUT_SELECT		BIT(1)
+#define PMIC5000_REG_THRES_AND_SEL	0x1B
+	#define PMIC5000_VIN_MGMT_THRESH	BIT(5)
+	#define PMIC5000_CURR_OR_PWR		BIT(6)
+	#define PMIC5000_VIN_BULK_THRESH	BIT(7)
 #define PMIC5000_REG_SWA_CURR_WARN	0x1C
 #define PMIC5000_REG_SWB_CURR_WARN	0x1D
 #define PMIC5000_REG_SWC_CURR_WARN	0x1E
 #define PMIC5000_REG_SWD_CURR_WARN	0x1F
+#define PMIC5000_REG_SWA_VOLT_SET	0x21
+#define PMIC5000_REG_SWA_THRESH		0x22
+#define PMIC5000_REG_SWB_VOLT_SET	0x23
+#define PMIC5000_REG_SWB_THRESH		0x24
+#define PMIC5000_REG_SWC_VOLT_SET	0x25
+#define PMIC5000_REG_SWC_THRESH		0x26
+#define PMIC5000_REG_SWD_VOLT_SET	0x27
+#define PMIC5000_REG_SWD_THRESH		0x28
+#define PMIC5000_REG_SW_VOLT_RANGE	0x2B
+	#define PMIC5000_SWD_RANGE		BIT(0)
+	#define PMIC5000_SWC_RANGE		BIT(3)
+	#define PMIC5000_SWB_RANGE		BIT(4)
+	#define PMIC5000_SWA_RANGE		BIT(5)
 #define PMIC5000_REG_ADC_CONFIG		0x30
+	#define PMIC5000_ADC_SELECT_MASK	GENMASK(6, 3)
+	#define PMIC5000_ADC_ENABLE		BIT(7)
 #define PMIC5000_REG_ADC_VOLTAGE	0x31
 #define PMIC5000_REG_TEMPERATURE	0x33
 #define PMIC5000_REG_REVISION		0x3B
 #define PMIC5000_REG_VENDOR		0x3C
 
-#define PMIC5000_OUTPUT_SELECT		BIT(1)
-#define PMIC5000_CURR_OR_PWR		BIT(6)
-#define PMIC5000_ADC_ENABLE		BIT(7)
-#define PMIC5000_ADC_SELECT_MASK	GENMASK(6, 3)
 
 /* 125 mA multiplier */
 #define PMIC5000_CURR_UNIT		125
 /* 125 mW multiplier */
-#define PMIC5000_POWER_UNIT		125000
+#define PMIC5000_POWER_UNIT		(125 * MILLIWATT_PER_WATT)
 /* mV multipliers */
 #define PMIC5000_VOLT_UNIT		15
 #define PMIC5000_VINBULK_UNIT		70
@@ -80,13 +96,8 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 	if (channel != 0)
 		return -EOPNOTSUPP;
 
-	if (attr == hwmon_temp_max_alarm) {
-		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
-		if (err)
-			return err;
-		*val = regval >> 7 & 0x01;
-		return 0;
-	} else if (attr == hwmon_temp_input) {
+	switch (attr) {
+	case hwmon_temp_input: {
 		err = regmap_read(regmap, PMIC5000_REG_TEMPERATURE, &regval);
 		if (err)
 			return err;
@@ -94,10 +105,31 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 		/* Below 85°C */
 		if (regval == 0)
 			return -EOPNOTSUPP;
-		*val = (75 + regval * 10) * 1000;
+		/* 0b001 = 85°C, 0b010 = 95°C, etc. */
+		*val = (75 + regval * 10) * MILLIDEGREE_PER_DEGREE;
 		return 0;
 	}
-	return -EOPNOTSUPP;
+	case hwmon_temp_max: {
+		err = regmap_read(regmap, PMIC5000_REG_THRES_AND_SEL, &regval);
+		if (err)
+			return err;
+		regval &= 0x07;
+		/* Reserved */
+		if (regval == 0 || regval == 0x7)
+			return -EOPNOTSUPP;
+		*val = (75 + regval * 10) * MILLIDEGREE_PER_DEGREE;
+		return 0;
+	}
+	case hwmon_temp_max_alarm: {
+		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
+		if (err)
+			return err;
+		*val = regval >> 7 & 0x01;
+		return 0;
+	}
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
@@ -109,7 +141,7 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
 
 	if (attr == hwmon_curr_input) {
 		/* Select power measurements */
-		err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
+		err = regmap_update_bits(regmap, PMIC5000_REG_THRES_AND_SEL,
 					 PMIC5000_CURR_OR_PWR, 0);
 		if (err)
 			return err;
@@ -177,7 +209,7 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel,
 		return -EOPNOTSUPP;
 
 	/* Select power measurements */
-	err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
+	err = regmap_update_bits(regmap, PMIC5000_REG_THRES_AND_SEL,
 				 PMIC5000_CURR_OR_PWR, PMIC5000_CURR_OR_PWR);
 	if (err)
 		return err;
@@ -207,6 +239,100 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel,
 	return 0;
 }
 
+static int pmic5000_read_volt_thresholds(struct regmap *regmap, u32 attr,
+					 int channel, long *val)
+{
+	int err;
+	u32 set_reg, thresh_reg, range_bit;
+	u32 set_regval, thresh_regval, range_regval;
+	u32 volt_set;
+	int base_volts[2];
+
+	switch (channel) {
+	case 0:
+		set_reg = PMIC5000_REG_SWA_VOLT_SET;
+		thresh_reg = PMIC5000_REG_SWA_THRESH;
+		range_bit = PMIC5000_SWA_RANGE;
+		base_volts[0] = 800;
+		base_volts[1] = 600;
+		break;
+	case 1:
+		set_reg = PMIC5000_REG_SWB_VOLT_SET;
+		thresh_reg = PMIC5000_REG_SWB_THRESH;
+		range_bit = PMIC5000_SWB_RANGE;
+		base_volts[0] = 800;
+		base_volts[1] = 600;
+		break;
+	case 2:
+		set_reg = PMIC5000_REG_SWC_VOLT_SET;
+		thresh_reg = PMIC5000_REG_SWC_THRESH;
+		range_bit = PMIC5000_SWC_RANGE;
+		base_volts[0] = 800;
+		base_volts[1] = 600;
+		break;
+	case 3:
+		set_reg = PMIC5000_REG_SWD_VOLT_SET;
+		thresh_reg = PMIC5000_REG_SWD_THRESH;
+		range_bit = PMIC5000_SWD_RANGE;
+		base_volts[0] = 1500;
+		base_volts[1] = 2200;
+		break;
+	case 5:
+	case 6: {
+		err = regmap_read(regmap, PMIC5000_REG_THRES_AND_SEL,
+				  &thresh_regval);
+		if (err)
+			return err;
+		if (channel == 5) {
+			if (thresh_regval & PMIC5000_VIN_BULK_THRESH)
+				*val = 14500;
+			else
+				*val = 16000;
+			return 0;
+		} else {
+			if (thresh_regval & PMIC5000_VIN_MGMT_THRESH)
+				*val = 3800;
+			else
+				*val = 3700;
+			return 0;
+		}
+	}
+
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	err = regmap_read(regmap, set_reg, &set_regval);
+	if (err)
+		return err;
+	err = regmap_read(regmap, thresh_reg, &thresh_regval);
+	if (err)
+		return err;
+	err = regmap_read(regmap, PMIC5000_REG_SW_VOLT_RANGE, &range_regval);
+	if (err)
+		return err;
+
+	volt_set = range_regval & range_bit ? base_volts[1] : base_volts[0];
+	volt_set += (set_regval >> 1) * 5;
+
+	switch (attr) {
+	case hwmon_in_min:
+		/* 10%, 12.5%, Reserved, Reserved */
+		const int min_permilles[4] = { 100, 125, PERMILLE, PERMILLE };
+		*val = volt_set - (min_permilles[(thresh_regval >> 2) & 0x03] *
+				   volt_set / PERMILLE);
+		return 0;
+	case hwmon_in_max:
+		/* 7.5%, 10%, 12.5%, Reserved */
+		const int max_permilles[4] = { 75, 100, 125, PERMILLE };
+		*val = volt_set + (max_permilles[(thresh_regval >> 4) & 0x03] *
+				   volt_set / PERMILLE);
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 				    int channel, long *val)
 {
@@ -234,7 +360,7 @@ static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 		}
 	} else if (channel == 5 || channel == 6) {
 		switch (attr) {
-		case hwmon_in_min_alarm: {
+		case hwmon_in_max_alarm: {
 			err = regmap_read(regmap, PMIC5000_REG_OVER_VOLT_IN,
 					  &regval);
 			if (err)
@@ -254,9 +380,21 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 	int err, mult;
 	u32 regval;
 
-	if (attr != hwmon_in_input)
+	switch (attr) {
+	case hwmon_in_input:
+		break;
+	case hwmon_in_min:
+	case hwmon_in_max:
+		return pmic5000_read_volt_thresholds(regmap, attr, channel,
+						     val);
+	case hwmon_in_min_alarm:
+	case hwmon_in_max_alarm:
 		return pmic5000_read_adc_alarms(regmap, attr, channel, val);
+	default:
+		return -EOPNOTSUPP;
+	}
 
+	/* Channel 4 is reserved */
 	if (channel < 0 || channel > 9 || channel == 4)
 		return -EOPNOTSUPP;
 
@@ -466,22 +604,23 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 
 static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
-	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX_ALARM),
-	HWMON_CHANNEL_INFO(in,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM |
-				   HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM |
-				   HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM |
-				   HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM |
-				   HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL),
+	HWMON_CHANNEL_INFO(temp,
+			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_ALARM),
+	HWMON_CHANNEL_INFO(
+		in,
+		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
+			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
+			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
+			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
+			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT,
+		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_LABEL, HWMON_I_INPUT | HWMON_I_LABEL,
+		HWMON_I_INPUT | HWMON_I_LABEL),
 	HWMON_CHANNEL_INFO(
 		curr,
 		HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
@@ -528,7 +667,7 @@ static const struct attribute_group *pmic5000_attr_groups[] = {
 static bool pmic5000_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
-	case PMIC5000_REG_CURR_OR_PWR:
+	case PMIC5000_REG_THRES_AND_SEL:
 	case PMIC5000_REG_ADC_CONFIG:
 		return true;
 	default:
