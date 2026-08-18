@@ -71,6 +71,11 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long
 	u32 regval;
 	
 	if (attr == hwmon_curr_input) {
+		/* Error if power is selected */
+		regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
+		if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
+			return -EOPNOTSUPP;
+
 		switch (channel) {
 		case 0:
 			reg = PMIC5000_REG_SWA_POWER;
@@ -123,6 +128,11 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, lon
 	u32 regval;
 
 	if (attr != hwmon_power_input)
+		return -EOPNOTSUPP;
+
+	/* Error if curr is selected */
+	regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
+	if ((regval & PMIC5000_CURR_OR_PWR) != PMIC5000_CURR_OR_PWR)
 		return -EOPNOTSUPP;
 
 	switch (channel) {
@@ -355,39 +365,19 @@ static ssize_t pmic5000_write_mode(struct device *dev, struct device_attribute *
 static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types type,
 				  u32 attr, int channel)
 {
-	struct regmap *regmap = (struct regmap *)data;
-	u32 regval;
 	switch (type) {
 	case hwmon_chip:
 		if (attr == hwmon_chip_update_interval)
 			return 0644;
 		break;
 	case hwmon_in:
-		if (attr == hwmon_in_input) {
-			if (channel != 4)
-				return 0444;
-			else
-				return 0;
-		}
-		break;
+		if (channel != 4)
+			return 0444;
+		return 0;
 	case hwmon_power:
-		if (attr == hwmon_power_input) {
-			regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
-			if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
-				return 0444;
-			else
-				return 0;
-		}
-		break;
+		return 0444;
 	case hwmon_curr:
-		if (attr == hwmon_curr_input) {
-			regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
-			if ((regval & PMIC5000_CURR_OR_PWR) != PMIC5000_CURR_OR_PWR)
-				return 0444;
-			else
-				return 0;
-		}
-		break;
+		return 0444;
 	default:
 		break;
 	}
