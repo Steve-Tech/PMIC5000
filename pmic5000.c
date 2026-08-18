@@ -38,7 +38,7 @@
 #define PMIC5000_REG_SWD_CURR_WARN	0x1F
 #define PMIC5000_REG_ADC_CONFIG		0x30
 #define PMIC5000_REG_ADC_VOLTAGE	0x31
-#define PMIC5000_REG_TEMPERATURE	0x31
+#define PMIC5000_REG_TEMPERATURE	0x33
 #define PMIC5000_REG_REVISION		0x3B
 #define PMIC5000_REG_VENDOR		0x3C
 
@@ -548,6 +548,7 @@ static bool pmic5000_volatile_reg(struct device *dev, unsigned int reg)
 	case PMIC5000_REG_SWC_POWER:
 	case PMIC5000_REG_SWD_POWER:
 	case PMIC5000_REG_ADC_VOLTAGE:
+	case PMIC5000_REG_TEMPERATURE:
 		return true;
 	default:
 		return false;
