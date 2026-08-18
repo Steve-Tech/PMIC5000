@@ -37,6 +37,7 @@
 #define PMIC5000_REG_SWD_CURR_WARN	0x1F
 #define PMIC5000_REG_ADC_CONFIG		0x30
 #define PMIC5000_REG_ADC_VOLTAGE	0x31
+#define PMIC5000_REG_TEMPERATURE	0x31
 #define PMIC5000_REG_REVISION		0x3B
 #define PMIC5000_REG_VENDOR		0x3C
 
@@ -68,19 +69,32 @@ static const char *const pmic5000_voltage_labels[] = {
 
 /* hwmon */
 
-static int pmic5000_read_temp_alarm(struct regmap *regmap, u32 attr, int channel, long *val)
+static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel, long *val)
 {
 	int err;
 	u32 regval;
 
-	if (attr != hwmon_temp_max_alarm || channel != 0)
+	if (channel != 0)
 		return -EOPNOTSUPP;
 
-	err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
-	if (err)
-		return err;
-	*val = regval >> 7 & 0x01;
-	return 0;
+	if (attr == hwmon_temp_max_alarm) {
+		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
+		if (err)
+			return err;
+		*val = regval >> 7 & 0x01;
+		return 0;
+	} else if (attr == hwmon_temp_input) {
+		err = regmap_read(regmap, PMIC5000_REG_TEMPERATURE, &regval);
+		if (err)
+			return err;
+		regval >>= 5;
+		/* Below 85°C */
+		if (regval == 0)
+			return -EOPNOTSUPP;
+		*val = (75 + regval * 10) * 1000;
+		return 0;
+	}
+	return -EOPNOTSUPP;
 }
 
 static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long *val)
@@ -289,7 +303,7 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 		case hwmon_chip:
 			return pmic5000_read_interval(regmap, attr, val);
 		case hwmon_temp:
-			return pmic5000_read_temp_alarm(regmap, attr, channel, val);
+			return pmic5000_read_temp(regmap, attr, channel, val);
 		case hwmon_in:
 			return pmic5000_read_adc(regmap, attr, channel, val);
 		case hwmon_curr:
@@ -434,7 +448,7 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 
 static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
-	HWMON_CHANNEL_INFO(temp, HWMON_T_MAX_ALARM),
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX_ALARM),
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
 			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
