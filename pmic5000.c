@@ -41,10 +41,10 @@
 #define PMIC5000_ADC_ENABLE		BIT(7)
 #define PMIC5000_ADC_SELECT_MASK	GENMASK(6, 3)
 
-/* 125 mW multiplier */
-#define PMIC5000_POWER_UNIT		125000
 /* 125 mA multiplier */
 #define PMIC5000_CURR_UNIT		125
+/* 125 mW multiplier */
+#define PMIC5000_POWER_UNIT		125000
 /* mV multipliers */
 #define PMIC5000_VOLT_UNIT		15
 #define PMIC5000_VINBULK_UNIT		70
@@ -52,6 +52,14 @@
 
 struct pmic5000_data {
 	struct regmap *regmap;
+};
+
+static const char *const pmic5000_power_labels[] = {
+	"SWA", "SWB", "SWC", "SWD"
+};
+
+static const char *const pmic5000_voltage_labels[] = {
+	"SWA", "SWB", "SWC", "SWD", NULL, "VIN_Bulk", "VIN_Mgmt", "VBias", "VOUT_1.8V", "VOUT_1.0V"
 };
 
 /* hwmon */
@@ -212,6 +220,28 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 		default:
 			return -EOPNOTSUPP;
 	}
+}
+
+static int pmic5000_read_string(struct device *dev, enum hwmon_sensor_types type,
+			u32 attr, int channel, const char **str)
+{
+	if (type == hwmon_curr && attr == hwmon_curr_label) {
+		if (channel < 0 || channel > 3)
+			return -EOPNOTSUPP;
+		*str = pmic5000_power_labels[channel];
+	} else if (type == hwmon_power && attr == hwmon_power_label) {
+		if (channel < 0 || channel > 3)
+			return -EOPNOTSUPP;
+		*str = pmic5000_power_labels[channel];
+	} else if (type == hwmon_in && attr == hwmon_in_label) {
+		if (channel < 0 || channel > 9 || channel == 4)
+			return -EOPNOTSUPP;
+		*str = pmic5000_voltage_labels[channel];
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
 }
 
 static int pmic5000_write_interval(struct regmap *regmap, long val)
@@ -381,23 +411,33 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
 	HWMON_CHANNEL_INFO(in,
-			   HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT,
-			   HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT, HWMON_I_INPUT,
-			   HWMON_I_INPUT, HWMON_I_INPUT),
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL),
 	HWMON_CHANNEL_INFO(curr,
-			   HWMON_C_INPUT | HWMON_C_CRIT,
-			   HWMON_C_INPUT | HWMON_C_CRIT,
-			   HWMON_C_INPUT | HWMON_C_CRIT,
-			   HWMON_C_INPUT | HWMON_C_CRIT),
+			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL),
 	HWMON_CHANNEL_INFO(power,
-			   HWMON_P_INPUT, HWMON_P_INPUT,
-			   HWMON_P_INPUT, HWMON_P_INPUT),
+			   HWMON_P_INPUT | HWMON_P_LABEL,
+			   HWMON_P_INPUT | HWMON_P_LABEL,
+			   HWMON_P_INPUT | HWMON_P_LABEL,
+			   HWMON_P_INPUT | HWMON_P_LABEL),
 	NULL
 };
 
 static const struct hwmon_ops pmic5000_hwmon_ops = {
 	.is_visible = pmic5000_is_visible,
 	.read = pmic5000_read,
+	.read_string = pmic5000_read_string,
 	.write = pmic5000_write,
 };
 
