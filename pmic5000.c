@@ -14,7 +14,6 @@
 #include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm.h>
@@ -525,44 +524,6 @@ static int pmic5000_write(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
-static ssize_t pmic5000_read_enable(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	struct regmap *regmap = dev_get_drvdata(dev);
-	u32 regval;
-	int err;
-
-	err = regmap_read(regmap, PMIC5000_REG_ADC_CONFIG, &regval);
-	if (err < 0)
-		return err;
-
-	return sprintf(buf, "%d\n", !!(regval & PMIC5000_ADC_ENABLE));
-}
-
-static ssize_t pmic5000_write_enable(struct device *dev,
-				     struct device_attribute *attr,
-				     const char *buf, size_t count)
-{
-	struct regmap *regmap = dev_get_drvdata(dev);
-	long val;
-	int err;
-
-	err = kstrtol(buf, 10, &val);
-	if (err)
-		return err;
-
-	if (val && val != 1)
-		return -EINVAL;
-
-	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
-				 PMIC5000_ADC_ENABLE,
-				 val ? PMIC5000_ADC_ENABLE : 0);
-	if (err)
-		return err;
-
-	return count;
-}
-
 static umode_t pmic5000_is_visible(const void *data,
 				   enum hwmon_sensor_types type, u32 attr,
 				   int channel)
@@ -645,21 +606,6 @@ static const struct hwmon_ops pmic5000_hwmon_ops = {
 static const struct hwmon_chip_info pmic5000_chip_info = {
 	.ops = &pmic5000_hwmon_ops,
 	.info = pmic5000_info,
-};
-
-static SENSOR_DEVICE_ATTR(enable, 0664, pmic5000_read_enable,
-			  pmic5000_write_enable, 0);
-
-static struct attribute *pmic5000_attrs[] = {
-	&sensor_dev_attr_enable.dev_attr.attr, NULL
-};
-
-static const struct attribute_group pmic5000_attr_group = {
-	.attrs = pmic5000_attrs,
-};
-
-static const struct attribute_group *pmic5000_attr_groups[] = {
-	&pmic5000_attr_group, NULL
 };
 
 /* regmap */
@@ -768,10 +714,8 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 	data->regmap = regmap;
 	dev_set_drvdata(dev, data);
 
-	hwmon_dev = devm_hwmon_device_register_with_info(dev, "pmic5000",
-							 regmap,
-							 &pmic5000_chip_info,
-							 pmic5000_attr_groups);
+	hwmon_dev = devm_hwmon_device_register_with_info(
+		dev, "pmic5000", regmap, &pmic5000_chip_info, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
