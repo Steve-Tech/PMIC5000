@@ -71,10 +71,11 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long
 	u32 regval;
 	
 	if (attr == hwmon_curr_input) {
-		/* Error if power is selected */
-		regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
-		if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
-			return -EOPNOTSUPP;
+		/* Select power measurements */
+		err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
+					PMIC5000_CURR_OR_PWR, 0);
+		if (err)
+			return err;
 
 		switch (channel) {
 		case 0:
@@ -130,10 +131,11 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, lon
 	if (attr != hwmon_power_input)
 		return -EOPNOTSUPP;
 
-	/* Error if curr is selected */
-	regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
-	if ((regval & PMIC5000_CURR_OR_PWR) != PMIC5000_CURR_OR_PWR)
-		return -EOPNOTSUPP;
+	/* Select power measurements */
+	err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
+				PMIC5000_CURR_OR_PWR, PMIC5000_CURR_OR_PWR);
+	if (err)
+		return err;
 
 	switch (channel) {
 	case 0:
@@ -325,43 +327,6 @@ static ssize_t pmic5000_write_enable(struct device *dev, struct device_attribute
 	return count;
 }
 
-static ssize_t pmic5000_read_mode(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct regmap *regmap = dev_get_drvdata(dev);
-	u32 regval;
-	int err;
-
-	err = regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
-	if (err < 0)
-		return err;
-
-	if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
-		return sprintf(buf, "curr [power]\n");
-	else
-		return sprintf(buf, "[curr] power\n");
-}
-
-static ssize_t pmic5000_write_mode(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct regmap *regmap = dev_get_drvdata(dev);
-	long val, err;
-
-	if (strncmp(buf, "curr", 4) == 0)
-		val = 0;
-	else if (strncmp(buf, "power", 5) == 0)
-		val = 1;
-	else
-		return -EINVAL;
-
-	err = regmap_update_bits(regmap, PMIC5000_REG_CURR_OR_PWR,
-				  PMIC5000_CURR_OR_PWR,
-				  val ? PMIC5000_CURR_OR_PWR : 0);
-	if (err)
-		return err;
-
-	return count;
-}
-
 static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types type,
 				  u32 attr, int channel)
 {
@@ -437,11 +402,9 @@ static const struct hwmon_chip_info pmic5000_chip_info = {
 };
 
 static SENSOR_DEVICE_ATTR(enable, 0664, pmic5000_read_enable, pmic5000_write_enable, 0);
-static SENSOR_DEVICE_ATTR(mode, 0664, pmic5000_read_mode, pmic5000_write_mode, 0);
 
 static struct attribute *pmic5000_attrs[] = {
 	&sensor_dev_attr_enable.dev_attr.attr,
-	&sensor_dev_attr_mode.dev_attr.attr,
 	NULL
 };
 
