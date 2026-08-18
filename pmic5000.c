@@ -21,6 +21,10 @@
 #include <linux/regmap.h>
 
 /* PMIC5000 registers. */
+#define PMIC5000_REG_OVER_VOLT_IN	0x08
+#define PMIC5000_REG_OVER_CURRENT	0x09
+#define PMIC5000_REG_OVER_VOLTAGE	0x0A
+#define PMIC5000_REG_UNDER_VOLTAGE	0x0B
 #define PMIC5000_REG_SWA_POWER		0x0C
 #define PMIC5000_REG_SWB_POWER		0x0D
 #define PMIC5000_REG_SWC_POWER		0x0E
@@ -64,6 +68,21 @@ static const char *const pmic5000_voltage_labels[] = {
 
 /* hwmon */
 
+static int pmic5000_read_temp_alarm(struct regmap *regmap, u32 attr, int channel, long *val)
+{
+	int err;
+	u32 regval;
+
+	if (attr != hwmon_temp_max_alarm || channel != 0)
+		return -EOPNOTSUPP;
+
+	err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
+	if (err)
+		return err;
+	*val = regval >> 7 & 0x01;
+	return 0;
+}
+
 static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long *val)
 {
 	int reg, err;
@@ -93,7 +112,7 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long
 		default:
 			return -EOPNOTSUPP;
 		}
-	} else if (attr == hwmon_curr_crit) {
+	} else if (attr == hwmon_curr_max) {
 		shift = 2;
 		switch (channel) {
 		case 0:
@@ -111,6 +130,12 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long
 		default:
 			return -EOPNOTSUPP;
 		}
+	} else if (attr == hwmon_curr_max_alarm && channel >= 0 && channel <= 3) {
+		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
+		if (err)
+			return err;
+		*val = regval >> (3 - channel) & 0x01;
+			return 0;
 	} else {
 		return -EOPNOTSUPP;
 	}
@@ -162,13 +187,53 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, lon
 	return 0;
 }
 
+static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr, int channel, long *val)
+{
+	int err;
+	u32 regval;
+
+	if (channel >= 0 && channel <= 3) {
+		switch (attr) {
+		case hwmon_in_min_alarm:
+			{
+				err = regmap_read(regmap, PMIC5000_REG_UNDER_VOLTAGE, &regval);
+				if (err)
+					return err;
+				*val = regval >> (3 - channel) & 0x01;
+				return 0;
+			}
+		case hwmon_in_max_alarm:
+			{
+				err = regmap_read(regmap, PMIC5000_REG_OVER_VOLTAGE, &regval);
+				if (err)
+					return err;
+				*val = regval >> (7 - channel) & 0x01;
+				return 0;
+			}
+		}
+	} else if (channel == 5 || channel == 6) {
+		switch (attr) {
+		case hwmon_in_min_alarm:
+			{
+				err = regmap_read(regmap, PMIC5000_REG_OVER_VOLT_IN, &regval);
+				if (err)
+					return err;
+				*val = regval >> (channel - 4) & 0x01;
+				return 0;
+			}
+		}
+	}
+
+	return -EOPNOTSUPP;
+}
+
 static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel, long *val)
 {
 	int err, mult;
 	u32 regval;
 
 	if (attr != hwmon_in_input)
-		return -EOPNOTSUPP;
+		return pmic5000_read_adc_alarms(regmap, attr, channel, val);
 		
 	if (channel < 0 || channel > 9 || channel == 4)
 		return -EOPNOTSUPP;
@@ -223,6 +288,8 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 	switch (type) {
 		case hwmon_chip:
 			return pmic5000_read_interval(regmap, attr, val);
+		case hwmon_temp:
+			return pmic5000_read_temp_alarm(regmap, attr, channel, val);
 		case hwmon_in:
 			return pmic5000_read_adc(regmap, attr, channel, val);
 		case hwmon_curr:
@@ -335,6 +402,8 @@ static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types typ
 		if (attr == hwmon_chip_update_interval)
 			return 0644;
 		break;
+	case hwmon_temp:
+		return 0444;
 	case hwmon_in:
 		if (channel != 4)
 			return 0444;
@@ -365,22 +434,23 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 
 static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
+	HWMON_CHANNEL_INFO(temp, HWMON_T_MAX_ALARM),
 	HWMON_CHANNEL_INFO(in,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
-			   HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM | HWMON_I_LABEL,
 			   HWMON_I_INPUT | HWMON_I_LABEL,
 			   HWMON_I_INPUT | HWMON_I_LABEL,
 			   HWMON_I_INPUT | HWMON_I_LABEL),
 	HWMON_CHANNEL_INFO(curr,
-			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
-			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
-			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL,
-			   HWMON_C_INPUT | HWMON_C_CRIT | HWMON_C_LABEL),
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL),
 	HWMON_CHANNEL_INFO(power,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
@@ -433,6 +503,10 @@ static bool pmic5000_writeable_reg(struct device *dev, unsigned int reg)
 static bool pmic5000_volatile_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case PMIC5000_REG_OVER_VOLT_IN:
+	case PMIC5000_REG_OVER_CURRENT:
+	case PMIC5000_REG_OVER_VOLTAGE:
+	case PMIC5000_REG_UNDER_VOLTAGE:
 	case PMIC5000_REG_SWA_POWER:
 	case PMIC5000_REG_SWB_POWER:
 	case PMIC5000_REG_SWC_POWER:
@@ -537,8 +611,6 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 static int pmic5000_i2c_init(struct i2c_client *client)
 {
 	struct i2c_adapter *adapter = client->adapter;
-
-	dev_warn(&client->dev, "Initializing PMIC5000 I2C device at 0x%02x\n", client->addr);
 
 	/*
 	 * Register accesses are 8-bit, so require byte-data transactions only.
