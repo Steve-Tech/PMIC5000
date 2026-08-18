@@ -25,16 +25,23 @@
 #define PMIC5000_REG_SWC_POWER		0x0E
 #define PMIC5000_REG_SWD_POWER		0x0F
 #define PMIC5000_REG_OUTPUT_SELECT	0x1A
+#define PMIC5000_REG_CURR_OR_PWR	0x1B
+#define PMIC5000_REG_SWA_CURR_WARN	0x1C
+#define PMIC5000_REG_SWB_CURR_WARN	0x1D
+#define PMIC5000_REG_SWC_CURR_WARN	0x1E
+#define PMIC5000_REG_SWD_CURR_WARN	0x1F
 #define PMIC5000_REG_ADC_CONFIG		0x30
 #define PMIC5000_REG_ADC_VOLTAGE	0x31
 #define PMIC5000_REG_REVISION		0x3B
 #define PMIC5000_REG_VENDOR		0x3C
 
 #define PMIC5000_OUTPUT_SELECT		BIT(1)
+#define PMIC5000_CURR_OR_PWR		BIT(6)
 #define PMIC5000_ADC_ENABLE		BIT(7)
 
 /* 125 mW */
 #define PMIC5000_POWER_UNIT		125000
+#define PMIC5000_CURR_UNIT		125
 
 struct pmic5000_data {
 	struct regmap *regmap;
@@ -45,6 +52,11 @@ struct pmic5000_data {
 static int pmic5000_val_from_reg(u32 reg)
 {
 	return reg * PMIC5000_POWER_UNIT;
+}
+
+static int pmic5000_curr_from_reg(u32 reg)
+{
+	return reg * PMIC5000_CURR_UNIT;
 }
 
 static int pmic5000_read_enable(struct regmap *regmap, long *val)
@@ -64,9 +76,7 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, lon
 	int reg, err;
 	u32 regval;
 
-	if (attr == hwmon_power_enable)
-		return pmic5000_read_enable(regmap, val);
-	else if (attr != hwmon_power_input)
+	if (attr != hwmon_power_input)
 		return -EOPNOTSUPP;
 
 	switch (channel) {
@@ -91,6 +101,59 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel, lon
 		return err;
 
 	*val = pmic5000_val_from_reg(regval);
+	return 0;
+}
+
+static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel, long *val)
+{
+	int reg, err;
+	int shift = 0;
+	u32 regval;
+	
+	if (attr == hwmon_curr_input) {
+		switch (channel) {
+		case 0:
+			reg = PMIC5000_REG_SWA_POWER;
+			break;
+		case 1:
+			reg = PMIC5000_REG_SWB_POWER;
+			break;
+		case 2:
+			reg = PMIC5000_REG_SWC_POWER;
+			break;
+		case 3:
+			reg = PMIC5000_REG_SWD_POWER;
+			break;
+		default:
+			return -EOPNOTSUPP;
+		}
+	} else if (attr == hwmon_curr_crit) {
+		shift = 2;
+		switch (channel) {
+		case 0:
+			reg = PMIC5000_REG_SWA_CURR_WARN;
+			break;
+		case 1:
+			reg = PMIC5000_REG_SWB_CURR_WARN;
+			break;
+		case 2:
+			reg = PMIC5000_REG_SWC_CURR_WARN;
+			break;
+		case 3:
+			reg = PMIC5000_REG_SWD_CURR_WARN;
+			break;
+		default:
+			return -EOPNOTSUPP;
+		}
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	err = regmap_read(regmap, reg, &regval);
+	if (err)
+		return err;
+
+	*val = pmic5000_curr_from_reg(regval) >> shift;
 	return 0;
 }
 
@@ -119,6 +182,8 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 			return pmic5000_read_interval(regmap, attr, val);
 		case hwmon_power:
 			return pmic5000_read_power(regmap, attr, channel, val);
+		case hwmon_curr:
+			return pmic5000_read_curr(regmap, attr, channel, val);
 		default:
 			return -EOPNOTSUPP;
 	}
@@ -145,17 +210,33 @@ static int pmic5000_write(struct device *dev, enum hwmon_sensor_types type,
 		return -EOPNOTSUPP;
 }
 
-static umode_t pmic5000_is_visible(const void *_data, enum hwmon_sensor_types type,
+static umode_t pmic5000_is_visible(const void *data, enum hwmon_sensor_types type,
 				  u32 attr, int channel)
 {
+	struct regmap *regmap = (struct regmap *)data;
+	u32 regval;
 	switch (type) {
 	case hwmon_chip:
 		if (attr == hwmon_chip_update_interval)
 			return 0644;
 		break;
 	case hwmon_power:
-		if (attr == hwmon_power_enable)
-			return 0644;
+		if (attr == hwmon_power_input) {
+			regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
+			if ((regval & PMIC5000_CURR_OR_PWR) == PMIC5000_CURR_OR_PWR)
+				return 0444;
+			else
+				return 0;
+		}
+		break;
+	case hwmon_curr:
+		if (attr == hwmon_curr_input) {
+			regmap_read(regmap, PMIC5000_REG_CURR_OR_PWR, &regval);
+			if ((regval & PMIC5000_CURR_OR_PWR) != PMIC5000_CURR_OR_PWR)
+				return 0444;
+			else
+				return 0;
+		}
 		break;
 	default:
 		break;
@@ -178,11 +259,15 @@ static bool pmic5000_vendor_valid(u8 bank, u8 id)
 }
 
 static const struct hwmon_channel_info *pmic5000_info[] = {
-	HWMON_CHANNEL_INFO(chip,
-			   HWMON_C_REGISTER_TZ | HWMON_C_UPDATE_INTERVAL),
+	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
+	HWMON_CHANNEL_INFO(curr,
+			   HWMON_C_INPUT | HWMON_C_CRIT,
+			   HWMON_C_INPUT | HWMON_C_CRIT,
+			   HWMON_C_INPUT | HWMON_C_CRIT,
+			   HWMON_C_INPUT | HWMON_C_CRIT),
 	HWMON_CHANNEL_INFO(power,
-			   HWMON_P_INPUT | HWMON_P_ENABLE,
-			   HWMON_P_INPUT, HWMON_P_INPUT, HWMON_P_INPUT),
+			   HWMON_P_INPUT, HWMON_P_INPUT,
+			   HWMON_P_INPUT, HWMON_P_INPUT),
 	NULL
 };
 
