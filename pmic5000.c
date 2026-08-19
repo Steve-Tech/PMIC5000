@@ -476,6 +476,8 @@ static int pmic5000_read_adc(struct pmic5000_data *data, u32 attr, int channel,
 	/*
 	 * The host shall wait minimum of 9 ms delay after the input selection
 	 * for ADC readout and the actual readout
+	 * 
+	 * msleep may sleep for up to 20ms, which is fine.
 	 */
 	msleep(9);
 

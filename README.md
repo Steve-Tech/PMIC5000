@@ -1,6 +1,6 @@
 # PMIC5000 DKMS
 
-This is a Linux kernel module for reading sensors from the PMIC5000 chip used in DDR5 memory modules. The driver currently does not auto-detect, so you will need to manually instantiate the device (on my system the PMIC is at address `0x49` & `0x4b` on PIIX4 port 0).
+This is a Linux kernel module for reading sensors from the PMIC5000 chip used in DDR5 memory modules. The driver currently does not auto-detect, so you will need to manually instantiate the device, it will be between addresses `0x48` and `0x4f` (on my system the PMICs are at addresses `0x49` & `0x4b` on PIIX4 port 0).
 
 The [it87 Makefile](https://github.com/a1wong/it87/blob/master/Makefile) was also used as an example.
 
@@ -21,6 +21,17 @@ echo 0x4b | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device
 sudo modprobe -r pmic5000
 sudo make dkms_clean
 ```
+
+## Instantiate at Boot
+
+If you have systemd-tmpfiles installed, you can create a file `/etc/tmpfiles.d/pmic5000.conf` with the following contents:
+
+```
+w /sys/bus/i2c/devices/i2c-1/new_device - - - - pmic5000 0x49
+w /sys/bus/i2c/devices/i2c-1/new_device - - - - pmic5000 0x4b
+```
+
+Alternatively, you can use cron or another method to run the `new_device` commands at boot.
 
 ## Example Output
 
