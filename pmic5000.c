@@ -15,6 +15,7 @@
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/units.h>
@@ -23,6 +24,7 @@
 // clang-format off
 #define PMIC5000_REG_OVER_VOLT_IN	0x08
 #define PMIC5000_REG_OVER_CURRENT	0x09
+	#define PMIC5000_HIGH_TEMP		BIT(7)
 #define PMIC5000_REG_OVER_VOLTAGE	0x0A
 #define PMIC5000_REG_UNDER_VOLTAGE	0x0B
 #define PMIC5000_REG_SWA_POWER		0x0C
@@ -78,6 +80,8 @@
 
 struct pmic5000_data {
 	struct regmap *regmap;
+	struct mutex mode_lock;
+	struct mutex adc_lock;
 };
 
 static const char *const pmic5000_power_labels[] = { "SWA", "SWB", "SWC",
@@ -149,7 +153,7 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
 		if (err)
 			return err;
-		*val = regval >> 7 & 0x01;
+		*val = !!(regval & PMIC5000_HIGH_TEMP);
 		return 0;
 	}
 	default:
@@ -157,19 +161,21 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 	}
 }
 
-static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
+static int pmic5000_read_curr(struct pmic5000_data *data, u32 attr, int channel,
 			      long *val)
 {
+	struct regmap *regmap = data->regmap;
 	int reg, err;
 	int shift = 0;
 	u32 regval;
 
 	if (attr == hwmon_curr_input) {
+		mutex_lock(&data->mode_lock);
 		/* Select power measurements */
 		err = regmap_update_bits(regmap, PMIC5000_REG_THRES_AND_SEL,
 					 PMIC5000_CURR_OR_PWR, 0);
 		if (err)
-			return err;
+			goto error;
 
 		switch (channel) {
 		case 0:
@@ -185,7 +191,8 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
 			reg = PMIC5000_REG_SWD_POWER;
 			break;
 		default:
-			return -EOPNOTSUPP;
+			err = -EOPNOTSUPP;
+			goto error;
 		}
 	} else if (attr == hwmon_curr_max) {
 		shift = 2;
@@ -218,26 +225,36 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
 
 	err = regmap_read(regmap, reg, &regval);
 	if (err)
-		return err;
+		goto error;
+
+	if (attr == hwmon_curr_input)
+		mutex_unlock(&data->mode_lock);
 
 	*val = regval * PMIC5000_CURR_UNIT >> shift;
 	return 0;
+
+error:
+	if (attr == hwmon_curr_input)
+		mutex_unlock(&data->mode_lock);
+	return err;
 }
 
-static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel,
-			       long *val)
+static int pmic5000_read_power(struct pmic5000_data *data, u32 attr,
+			       int channel, long *val)
 {
+	struct regmap *regmap = data->regmap;
 	int reg, err;
 	u32 regval;
 
 	if (attr != hwmon_power_input)
 		return -EOPNOTSUPP;
 
+	mutex_lock(&data->mode_lock);
 	/* Select power measurements */
 	err = regmap_update_bits(regmap, PMIC5000_REG_THRES_AND_SEL,
 				 PMIC5000_CURR_OR_PWR, PMIC5000_CURR_OR_PWR);
 	if (err)
-		return err;
+		goto error;
 
 	switch (channel) {
 	case 0:
@@ -253,15 +270,22 @@ static int pmic5000_read_power(struct regmap *regmap, u32 attr, int channel,
 		reg = PMIC5000_REG_SWD_POWER;
 		break;
 	default:
-		return -EOPNOTSUPP;
+		err = -EOPNOTSUPP;
+		goto error;
 	}
 
 	err = regmap_read(regmap, reg, &regval);
 	if (err)
-		return err;
+		goto error;
+
+	mutex_unlock(&data->mode_lock);
 
 	*val = regval * PMIC5000_POWER_UNIT;
 	return 0;
+
+error:
+	mutex_unlock(&data->mode_lock);
+	return err;
 }
 
 static int pmic5000_read_volt_thresholds(struct regmap *regmap, u32 attr,
@@ -399,9 +423,10 @@ static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 	return -EOPNOTSUPP;
 }
 
-static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
+static int pmic5000_read_adc(struct pmic5000_data *data, u32 attr, int channel,
 			     long *val)
 {
+	struct regmap *regmap = data->regmap;
 	int err, mult;
 	u32 regval;
 
@@ -441,10 +466,12 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 		break;
 	}
 
+	mutex_lock(&data->adc_lock);
+
 	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
 				 PMIC5000_ADC_SELECT_MASK, channel << 3);
 	if (err)
-		return err;
+		goto error;
 
 	/*
 	 * The host shall wait minimum of 9 ms delay after the input selection
@@ -454,10 +481,16 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 
 	err = regmap_read(regmap, PMIC5000_REG_ADC_VOLTAGE, &regval);
 	if (err)
-		return err;
+		goto error;
+
+	mutex_unlock(&data->adc_lock);
 
 	*val = regval * mult;
 	return 0;
+
+error:
+	mutex_unlock(&data->adc_lock);
+	return err;
 }
 
 static int pmic5000_read_interval(struct regmap *regmap, u32 attr, long *val)
@@ -478,7 +511,8 @@ static int pmic5000_read_interval(struct regmap *regmap, u32 attr, long *val)
 static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 			 u32 attr, int channel, long *val)
 {
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct pmic5000_data *data = dev_get_drvdata(dev);
+	struct regmap *regmap = data->regmap;
 
 	switch (type) {
 	case hwmon_chip:
@@ -486,11 +520,11 @@ static int pmic5000_read(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_temp:
 		return pmic5000_read_temp(regmap, attr, channel, val);
 	case hwmon_in:
-		return pmic5000_read_adc(regmap, attr, channel, val);
+		return pmic5000_read_adc(data, attr, channel, val);
 	case hwmon_curr:
-		return pmic5000_read_curr(regmap, attr, channel, val);
+		return pmic5000_read_curr(data, attr, channel, val);
 	case hwmon_power:
-		return pmic5000_read_power(regmap, attr, channel, val);
+		return pmic5000_read_power(data, attr, channel, val);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -519,9 +553,12 @@ static int pmic5000_read_string(struct device *dev,
 	return 0;
 }
 
-static int pmic5000_write_interval(struct regmap *regmap, long val)
+static int pmic5000_write_interval(struct pmic5000_data *data, long val)
 {
+	struct regmap *regmap = data->regmap;
 	u32 regval;
+	int err;
+
 	switch (val) {
 	case 1:
 		regval = 0;
@@ -539,18 +576,20 @@ static int pmic5000_write_interval(struct regmap *regmap, long val)
 		return -EINVAL;
 	}
 
-	return regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, 0x03,
-				  regval);
+	mutex_lock(&data->adc_lock);
+	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, 0x03, regval);
+	mutex_unlock(&data->adc_lock);
+	return err;
 }
 
 static int pmic5000_write(struct device *dev, enum hwmon_sensor_types type,
 			  u32 attr, int channel, long val)
 {
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct pmic5000_data *data = dev_get_drvdata(dev);
 
 	switch (type) {
 	case hwmon_chip:
-		return pmic5000_write_interval(regmap, val);
+		return pmic5000_write_interval(data, val);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -561,7 +600,8 @@ static umode_t pmic5000_is_visible(const void *data,
 				   int channel)
 {
 	int ret;
-	struct regmap *regmap = (struct regmap *)data;
+	struct pmic5000_data *pmic_data = (struct pmic5000_data *)data;
+	struct regmap *regmap = pmic_data->regmap;
 
 	switch (type) {
 	case hwmon_chip:
@@ -575,27 +615,21 @@ static umode_t pmic5000_is_visible(const void *data,
 			return 0;
 		if (channel >= 0 && channel <= 3 && (attr != hwmon_in_enable)) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
-			if (ret < 0)
-				return ret;
-			if (!ret)
+			if (!ret || ret < 0)
 				return 0;
 		}
 		return 0444;
 	case hwmon_power:
 		if (channel >= 0 && channel <= 3) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
-			if (ret < 0)
-				return ret;
-			if (!ret)
+			if (!ret || ret < 0)
 				return 0;
 		}
 		return 0444;
 	case hwmon_curr:
 		if (channel >= 0 && channel <= 3) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
-			if (ret < 0)
-				return ret;
-			if (!ret)
+			if (!ret || ret < 0)
 				return 0;
 		}
 		return 0444;
@@ -669,6 +703,7 @@ static const struct hwmon_chip_info pmic5000_chip_info = {
 static bool pmic5000_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case PMIC5000_REG_OUTPUT_SELECT:
 	case PMIC5000_REG_THRES_AND_SEL:
 	case PMIC5000_REG_ADC_CONFIG:
 		return true;
@@ -768,10 +803,12 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 		return -ENODEV;
 
 	data->regmap = regmap;
+	mutex_init(&data->mode_lock);
+	mutex_init(&data->adc_lock);
 	dev_set_drvdata(dev, data);
 
 	hwmon_dev = devm_hwmon_device_register_with_info(
-		dev, "pmic5000", regmap, &pmic5000_chip_info, NULL);
+		dev, "pmic5000", data, &pmic5000_chip_info, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
@@ -780,10 +817,16 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 		 ((revision >> 1) & 0x07) + 1);
 
 	/* Enable individual measurements and enable ADC */
-	regmap_update_bits(regmap, PMIC5000_REG_OUTPUT_SELECT,
-			   PMIC5000_OUTPUT_SELECT, PMIC5000_OUTPUT_SELECT);
-	regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, PMIC5000_ADC_ENABLE,
-			   PMIC5000_ADC_ENABLE);
+	err = regmap_update_bits(regmap, PMIC5000_REG_OUTPUT_SELECT,
+				 PMIC5000_OUTPUT_SELECT,
+				 PMIC5000_OUTPUT_SELECT);
+	if (err)
+		return err;
+	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
+				 PMIC5000_ADC_ENABLE, PMIC5000_ADC_ENABLE);
+	if (err)
+		return err;
+
 	return 0;
 }
 
