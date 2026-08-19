@@ -133,7 +133,7 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 		regval >>= 5;
 		/* Below 85°C */
 		if (regval == 0)
-			return -EOPNOTSUPP;
+			return -ENODATA;
 		/* 0b001 = 85°C, 0b010 = 95°C, etc. */
 		*val = (75 + regval * 10) * MILLIDEGREE_PER_DEGREE;
 		return 0;
@@ -365,18 +365,20 @@ static int pmic5000_read_volt_thresholds(struct regmap *regmap, u32 attr,
 	volt_set += (set_regval >> 1) * 5;
 
 	switch (attr) {
-	case hwmon_in_min:
+	case hwmon_in_min: {
 		/* 10%, 12.5%, Reserved, Reserved */
 		const int min_permilles[4] = { 100, 125, PERMILLE, PERMILLE };
 		*val = volt_set - (min_permilles[(thresh_regval >> 2) & 0x03] *
 				   volt_set / PERMILLE);
 		return 0;
-	case hwmon_in_max:
+	}
+	case hwmon_in_max: {
 		/* 7.5%, 10%, 12.5%, Reserved */
 		const int max_permilles[4] = { 75, 100, 125, PERMILLE };
 		*val = volt_set + (max_permilles[(thresh_regval >> 4) & 0x03] *
 				   volt_set / PERMILLE);
 		return 0;
+	}
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -809,15 +811,6 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 	mutex_init(&data->adc_lock);
 	dev_set_drvdata(dev, data);
 
-	hwmon_dev = devm_hwmon_device_register_with_info(
-		dev, "pmic5000", data, &pmic5000_chip_info, NULL);
-	if (IS_ERR(hwmon_dev))
-		return PTR_ERR(hwmon_dev);
-
-	dev_info(dev, "DDR5 PMIC sensor: vendor 0x%02x:0x%02x revision %d.%d\n",
-		 bank & 0x7f, vendor, ((revision >> 4) & 0x03) + 1,
-		 ((revision >> 1) & 0x07) + 1);
-
 	/* Enable individual measurements and enable ADC */
 	err = regmap_update_bits(regmap, PMIC5000_REG_OUTPUT_SELECT,
 				 PMIC5000_OUTPUT_SELECT,
@@ -828,6 +821,15 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 				 PMIC5000_ADC_ENABLE, PMIC5000_ADC_ENABLE);
 	if (err)
 		return err;
+
+	hwmon_dev = devm_hwmon_device_register_with_info(
+		dev, "pmic5000", data, &pmic5000_chip_info, NULL);
+	if (IS_ERR(hwmon_dev))
+		return PTR_ERR(hwmon_dev);
+
+	dev_info(dev, "DDR5 PMIC sensor: vendor 0x%02x:0x%02x revision %d.%d\n",
+		 bank & 0x7f, vendor, ((revision >> 4) & 0x03) + 1,
+		 ((revision >> 1) & 0x07) + 1);
 
 	return 0;
 }
