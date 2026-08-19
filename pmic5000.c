@@ -757,7 +757,7 @@ static int pmic5000_suspend(struct device *dev)
 
 	regcache_cache_bypass(regmap, true);
 	regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, PMIC5000_ADC_ENABLE,
-			   PMIC5000_ADC_ENABLE);
+			   0);
 	regcache_cache_bypass(regmap, false);
 
 	regcache_cache_only(regmap, true);
