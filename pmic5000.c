@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Driver for Jedec PMIC5000 compliant temperature sensors
+ * Driver for Jedec PMIC5000 compliant sensors
  *
  * Copyright (c) 2026 Stephen Horvath
  *
  * Inspired by spd5118.c.
  *
- * PMIC5000 compliant temperature sensors are typically used on DDR5
- * memory modules.
+ * PMIC5000 compliant sensors are typically used on DDR5 memory modules.
  */
 
 #include <linux/bitops.h>
@@ -53,6 +52,11 @@
 	#define PMIC5000_SWC_RANGE		BIT(3)
 	#define PMIC5000_SWB_RANGE		BIT(4)
 	#define PMIC5000_SWA_RANGE		BIT(5)
+#define PMIC5000_REG_REGULATOR_CONTROL	0x2F
+	#define PMIC5000_SWD_CONTROL		BIT(3)
+	#define PMIC5000_SWC_CONTROL		BIT(4)
+	#define PMIC5000_SWB_CONTROL		BIT(5)
+	#define PMIC5000_SWA_CONTROL		BIT(6)
 #define PMIC5000_REG_ADC_CONFIG		0x30
 	#define PMIC5000_ADC_SELECT_MASK	GENMASK(6, 3)
 	#define PMIC5000_ADC_ENABLE		BIT(7)
@@ -85,6 +89,28 @@ static const char *const pmic5000_voltage_labels[] = {
 };
 
 /* hwmon */
+
+static int pmic5000_check_regulator_enabled(struct regmap *regmap, int channel)
+{
+	u32 regval;
+	int err;
+
+	err = regmap_read(regmap, PMIC5000_REG_REGULATOR_CONTROL, &regval);
+	if (err)
+		return err;
+	switch (channel) {
+	case 0:
+		return !!(regval & PMIC5000_SWA_CONTROL);
+	case 1:
+		return !!(regval & PMIC5000_SWB_CONTROL);
+	case 2:
+		return !!(regval & PMIC5000_SWC_CONTROL);
+	case 3:
+		return !!(regval & PMIC5000_SWD_CONTROL);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
 
 static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 			      long *val)
@@ -380,6 +406,12 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 	u32 regval;
 
 	switch (attr) {
+	case hwmon_in_enable:
+		err = pmic5000_check_regulator_enabled(regmap, channel);
+		if (err < 0)
+			return err;
+		*val = err;
+		return 0;
 	case hwmon_in_input:
 		break;
 	case hwmon_in_min:
@@ -528,6 +560,9 @@ static umode_t pmic5000_is_visible(const void *data,
 				   enum hwmon_sensor_types type, u32 attr,
 				   int channel)
 {
+	int ret;
+	struct regmap *regmap = (struct regmap *)data;
+
 	switch (type) {
 	case hwmon_chip:
 		if (attr == hwmon_chip_update_interval)
@@ -536,12 +571,33 @@ static umode_t pmic5000_is_visible(const void *data,
 	case hwmon_temp:
 		return 0444;
 	case hwmon_in:
-		if (channel != 4)
-			return 0444;
-		return 0;
+		if (channel == 4)
+			return 0;
+		if (channel >= 0 && channel <= 3 && (attr != hwmon_in_enable)) {
+			ret = pmic5000_check_regulator_enabled(regmap, channel);
+			if (ret < 0)
+				return ret;
+			if (!ret)
+				return 0;
+		}
+		return 0444;
 	case hwmon_power:
+		if (channel >= 0 && channel <= 3) {
+			ret = pmic5000_check_regulator_enabled(regmap, channel);
+			if (ret < 0)
+				return ret;
+			if (!ret)
+				return 0;
+		}
 		return 0444;
 	case hwmon_curr:
+		if (channel >= 0 && channel <= 3) {
+			ret = pmic5000_check_regulator_enabled(regmap, channel);
+			if (ret < 0)
+				return ret;
+			if (!ret)
+				return 0;
+		}
 		return 0444;
 	default:
 		break;
@@ -569,14 +625,14 @@ static const struct hwmon_channel_info *pmic5000_info[] = {
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_ALARM),
 	HWMON_CHANNEL_INFO(
 		in,
-		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
-			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
-			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
-			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_MIN_ALARM |
-			HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
 		HWMON_I_INPUT,
 		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
 		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
