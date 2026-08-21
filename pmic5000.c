@@ -404,12 +404,6 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 	u32 regval;
 
 	switch (attr) {
-	case hwmon_in_enable:
-		err = pmic5000_check_regulator_enabled(regmap, channel);
-		if (err < 0)
-			return err;
-		*val = err;
-		return 0;
 	case hwmon_in_input:
 		break;
 	case hwmon_in_min:
@@ -549,7 +543,7 @@ static umode_t pmic5000_is_visible(const void *data,
 		/* Channel 4 is reserved */
 		if (channel == 4)
 			return 0;
-		if (channel <= 3 && attr != hwmon_in_enable) {
+		if (channel <= 3) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
 			if (!ret || ret < 0)
 				return 0;
@@ -594,13 +588,13 @@ static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_ALARM),
 	HWMON_CHANNEL_INFO(in,
-			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
 			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
 			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
 			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
 			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
 			   HWMON_I_INPUT,
 			   HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
