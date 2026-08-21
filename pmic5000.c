@@ -66,7 +66,6 @@
 #define PMIC5000_REG_REVISION		0x3B
 #define PMIC5000_REG_VENDOR		0x3C
 
-
 /* 125 mA multiplier */
 #define PMIC5000_CURR_UNIT		125
 /* 125 mW multiplier */
@@ -437,15 +436,16 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 	}
 
 	err = regmap_update_bits_base(regmap, PMIC5000_REG_ADC_CONFIG,
-				 PMIC5000_ADC_SELECT_MASK, channel << 3, &reg_changed, false, false);
+				      PMIC5000_ADC_SELECT_MASK, channel << 3,
+				      &reg_changed, false, false);
 	if (err)
 		return err;
 
 	if (reg_changed) {
 		/*
-		* The host shall wait minimum of 9 ms delay after the input selection
-		* for ADC readout and the actual readout
-		*/
+		 * The host shall wait minimum of 9 ms delay after the input selection
+		 * for ADC readout and the actual readout
+		 */
 		fsleep(9);
 	}
 
@@ -497,23 +497,21 @@ static int pmic5000_read_string(struct device *dev,
 				enum hwmon_sensor_types type, u32 attr,
 				int channel, const char **str)
 {
-	if (type == hwmon_curr && attr == hwmon_curr_label) {
+	if (type == hwmon_curr && attr == hwmon_curr_label)
 		*str = pmic5000_power_labels[channel];
-	} else if (type == hwmon_power && attr == hwmon_power_label) {
+	else if (type == hwmon_power && attr == hwmon_power_label)
 		*str = pmic5000_power_labels[channel];
-	} else if (type == hwmon_in && attr == hwmon_in_label) {
+	else if (type == hwmon_in && attr == hwmon_in_label)
 		*str = pmic5000_voltage_labels[channel];
-	} else {
+	else
 		return -EOPNOTSUPP;
-	}
-
-	return 0;
 }
 
 static int pmic5000_write_interval(struct regmap *regmap, long val)
 {
 	u32 regval;
 	const u32 valid_vals[] = { 1, 2, 4, 8 };
+
 	regval = find_closest(val, valid_vals, ARRAY_SIZE(valid_vals));
 
 	return regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, 0x03,
@@ -551,7 +549,7 @@ static umode_t pmic5000_is_visible(const void *data,
 		/* Channel 4 is reserved */
 		if (channel == 4)
 			return 0;
-		if (channel <= 3 && (attr != hwmon_in_enable)) {
+		if (channel <= 3 && attr != hwmon_in_enable) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
 			if (!ret || ret < 0)
 				return 0;
@@ -595,28 +593,25 @@ static const struct hwmon_channel_info *pmic5000_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_ALARM),
-	HWMON_CHANNEL_INFO(
-		in,
-		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
-			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
-			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
-			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
-			HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT,
-		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_LABEL, HWMON_I_INPUT | HWMON_I_LABEL,
-		HWMON_I_INPUT | HWMON_I_LABEL),
-	HWMON_CHANNEL_INFO(
-		curr,
-		HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
-		HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
-		HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
-		HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM |
-			HWMON_C_LABEL),
+	HWMON_CHANNEL_INFO(in,
+			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_ENABLE | HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
+			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT,
+			   HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_MAX | HWMON_I_MAX_ALARM | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL, HWMON_I_INPUT | HWMON_I_LABEL,
+			   HWMON_I_INPUT | HWMON_I_LABEL),
+	HWMON_CHANNEL_INFO(curr,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL,
+			   HWMON_C_INPUT | HWMON_C_MAX | HWMON_C_MAX_ALARM | HWMON_C_LABEL),
 	HWMON_CHANNEL_INFO(power, HWMON_P_INPUT | HWMON_P_LABEL,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
@@ -750,7 +745,6 @@ static int pmic5000_i2c_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(regmap),
 				     "regmap init failed\n");
 
-
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
@@ -782,8 +776,8 @@ static int pmic5000_i2c_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
-	hwmon_dev = devm_hwmon_device_register_with_info(
-		dev, "pmic5000", data, &pmic5000_chip_info, NULL);
+	hwmon_dev = devm_hwmon_device_register_with_info(dev, "pmic5000", data,
+							 &pmic5000_chip_info, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
