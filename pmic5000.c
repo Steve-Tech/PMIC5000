@@ -119,9 +119,6 @@ static int pmic5000_read_temp(struct regmap *regmap, u32 attr, int channel,
 	int err;
 	u32 regval;
 
-	if (channel != 0)
-		return -EOPNOTSUPP;
-
 	switch (attr) {
 	case hwmon_temp_input: {
 		err = regmap_read(regmap, PMIC5000_REG_TEMPERATURE, &regval);
@@ -206,8 +203,7 @@ static int pmic5000_read_curr(struct regmap *regmap, u32 attr, int channel,
 		default:
 			return -EOPNOTSUPP;
 		}
-	} else if (attr == hwmon_curr_max_alarm && channel >= 0 &&
-		   channel <= 3) {
+	} else if (attr == hwmon_curr_max_alarm && channel <= 3) {
 		err = regmap_read(regmap, PMIC5000_REG_OVER_CURRENT, &regval);
 		if (err)
 			return err;
@@ -304,7 +300,7 @@ static int pmic5000_read_volt_thresholds(struct regmap *regmap, u32 attr,
 		base_volts[1] = 2200;
 		break;
 	case 5:
-	case 6: {
+	case 6:
 		err = regmap_read(regmap, PMIC5000_REG_THRES_AND_SEL,
 				  &thresh_regval);
 		if (err)
@@ -322,7 +318,6 @@ static int pmic5000_read_volt_thresholds(struct regmap *regmap, u32 attr,
 				*val = 3700;
 			return 0;
 		}
-	}
 
 	default:
 		return -EOPNOTSUPP;
@@ -367,7 +362,7 @@ static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 	int err;
 	u32 regval;
 
-	if (channel >= 0 && channel <= 3) {
+	if (channel <= 3) {
 		switch (attr) {
 		case hwmon_in_min_alarm: {
 			err = regmap_read(regmap, PMIC5000_REG_UNDER_VOLTAGE,
@@ -406,6 +401,7 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 			     long *val)
 {
 	int err, mult;
+	bool reg_changed;
 	u32 regval;
 
 	switch (attr) {
@@ -428,10 +424,6 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 		return -EOPNOTSUPP;
 	}
 
-	/* Channel 4 is reserved */
-	if (channel < 0 || channel > 9 || channel == 4)
-		return -EOPNOTSUPP;
-
 	switch (channel) {
 	case 5:
 		mult = PMIC5000_VINBULK_UNIT;
@@ -444,18 +436,18 @@ static int pmic5000_read_adc(struct regmap *regmap, u32 attr, int channel,
 		break;
 	}
 
-	err = regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG,
-				 PMIC5000_ADC_SELECT_MASK, channel << 3);
+	err = regmap_update_bits_base(regmap, PMIC5000_REG_ADC_CONFIG,
+				 PMIC5000_ADC_SELECT_MASK, channel << 3, &reg_changed, false, false);
 	if (err)
 		return err;
 
-	/*
-	 * The host shall wait minimum of 9 ms delay after the input selection
-	 * for ADC readout and the actual readout
-	 * 
-	 * msleep may sleep for up to 20ms, which is fine.
-	 */
-	msleep(9);
+	if (reg_changed) {
+		/*
+		* The host shall wait minimum of 9 ms delay after the input selection
+		* for ADC readout and the actual readout
+		*/
+		fsleep(9);
+	}
 
 	err = regmap_read(regmap, PMIC5000_REG_ADC_VOLTAGE, &regval);
 	if (err)
@@ -506,16 +498,10 @@ static int pmic5000_read_string(struct device *dev,
 				int channel, const char **str)
 {
 	if (type == hwmon_curr && attr == hwmon_curr_label) {
-		if (channel < 0 || channel > 3)
-			return -EOPNOTSUPP;
 		*str = pmic5000_power_labels[channel];
 	} else if (type == hwmon_power && attr == hwmon_power_label) {
-		if (channel < 0 || channel > 3)
-			return -EOPNOTSUPP;
 		*str = pmic5000_power_labels[channel];
 	} else if (type == hwmon_in && attr == hwmon_in_label) {
-		if (channel < 0 || channel > 9 || channel == 4)
-			return -EOPNOTSUPP;
 		*str = pmic5000_voltage_labels[channel];
 	} else {
 		return -EOPNOTSUPP;
@@ -576,23 +562,24 @@ static umode_t pmic5000_is_visible(const void *data,
 	case hwmon_temp:
 		return 0444;
 	case hwmon_in:
+		/* Channel 4 is reserved */
 		if (channel == 4)
 			return 0;
-		if (channel >= 0 && channel <= 3 && (attr != hwmon_in_enable)) {
+		if (channel <= 3 && (attr != hwmon_in_enable)) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
 			if (!ret || ret < 0)
 				return 0;
 		}
 		return 0444;
 	case hwmon_power:
-		if (channel >= 0 && channel <= 3) {
+		if (channel <= 3) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
 			if (!ret || ret < 0)
 				return 0;
 		}
 		return 0444;
 	case hwmon_curr:
-		if (channel >= 0 && channel <= 3) {
+		if (channel <= 3) {
 			ret = pmic5000_check_regulator_enabled(regmap, channel);
 			if (!ret || ret < 0)
 				return 0;
