@@ -468,7 +468,7 @@ static int pmic5000_read_interval(struct regmap *regmap, u32 attr, long *val)
 	err = regmap_read(regmap, PMIC5000_REG_ADC_CONFIG, &regval);
 	if (err < 0)
 		return err;
-	*val = 1 << (regval & 0x03);
+	*val = BIT(regval & 0x03);
 	return 0;
 }
 
@@ -513,22 +513,8 @@ static int pmic5000_read_string(struct device *dev,
 static int pmic5000_write_interval(struct regmap *regmap, long val)
 {
 	u32 regval;
-	switch (val) {
-	case 1:
-		regval = 0;
-		break;
-	case 2:
-		regval = 1;
-		break;
-	case 4:
-		regval = 2;
-		break;
-	case 8:
-		regval = 3;
-		break;
-	default:
-		return -EINVAL;
-	}
+	const u32 valid_vals[] = { 1, 2, 4, 8 };
+	regval = find_closest(val, valid_vals, ARRAY_SIZE(valid_vals));
 
 	return regmap_update_bits(regmap, PMIC5000_REG_ADC_CONFIG, 0x03,
 				  regval);
@@ -730,12 +716,40 @@ static int pmic5000_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(pmic5000_pm_ops, pmic5000_suspend,
 				pmic5000_resume);
 
-static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
+/* I2C */
+
+static int pmic5000_i2c_init(struct i2c_client *client)
 {
-	unsigned int revision, vendor, bank;
+	struct i2c_adapter *adapter = client->adapter;
+
+	/*
+	 * Register accesses are 8-bit, so require byte-data transactions only.
+	 * Requiring WORD_DATA here rejects otherwise valid adapters.
+	 */
+	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
+		return -ENODEV;
+
+	return 0;
+}
+
+static int pmic5000_i2c_probe(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct regmap *regmap;
 	struct pmic5000_data *data;
 	struct device *hwmon_dev;
+	unsigned int revision, vendor, bank;
 	int err;
+
+	err = pmic5000_i2c_init(client);
+	if (err)
+		return dev_err_probe(dev, err, "I2C capability check failed\n");
+
+	regmap = devm_regmap_init_i2c(client, &pmic5000_regmap8_config);
+	if (IS_ERR(regmap))
+		return dev_err_probe(dev, PTR_ERR(regmap),
+				     "regmap init failed\n");
+
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -778,40 +792,6 @@ static int pmic5000_common_probe(struct device *dev, struct regmap *regmap)
 		 ((revision >> 1) & 0x07) + 1);
 
 	return 0;
-}
-
-/* I2C */
-
-static int pmic5000_i2c_init(struct i2c_client *client)
-{
-	struct i2c_adapter *adapter = client->adapter;
-
-	/*
-	 * Register accesses are 8-bit, so require byte-data transactions only.
-	 * Requiring WORD_DATA here rejects otherwise valid adapters.
-	 */
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
-
-	return 0;
-}
-
-static int pmic5000_i2c_probe(struct i2c_client *client)
-{
-	struct device *dev = &client->dev;
-	struct regmap *regmap;
-	int err;
-
-	err = pmic5000_i2c_init(client);
-	if (err)
-		return dev_err_probe(dev, err, "I2C capability check failed\n");
-
-	regmap = devm_regmap_init_i2c(client, &pmic5000_regmap8_config);
-	if (IS_ERR(regmap))
-		return dev_err_probe(dev, PTR_ERR(regmap),
-				     "regmap init failed\n");
-
-	return pmic5000_common_probe(dev, regmap);
 }
 
 static const struct i2c_device_id pmic5000_i2c_id[] = { { .name = "pmic5000" },
