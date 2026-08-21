@@ -20,7 +20,6 @@
 #include <linux/units.h>
 
 /* PMIC5000 registers. */
-// clang-format off
 #define PMIC5000_REG_OVER_VOLT_IN	0x08
 #define PMIC5000_REG_OVER_CURRENT	0x09
 	#define PMIC5000_HIGH_TEMP		BIT(7)
@@ -74,7 +73,6 @@
 #define PMIC5000_VOLT_UNIT		15
 #define PMIC5000_VINBULK_UNIT		70
 #define PMIC5000_VBIAS_UNIT		25
-// clang-format on
 
 struct pmic5000_data {
 	struct regmap *regmap;
@@ -363,15 +361,15 @@ static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 
 	if (channel <= 3) {
 		switch (attr) {
-		case hwmon_in_min_alarm: {
+		case hwmon_in_min_alarm:
 			err = regmap_read(regmap, PMIC5000_REG_UNDER_VOLTAGE,
 					  &regval);
 			if (err)
 				return err;
 			*val = regval >> (3 - channel) & 0x01;
 			return 0;
-		}
-		case hwmon_in_max_alarm: {
+
+		case hwmon_in_max_alarm:
 			err = regmap_read(regmap, PMIC5000_REG_OVER_VOLTAGE,
 					  &regval);
 			if (err)
@@ -379,17 +377,15 @@ static int pmic5000_read_adc_alarms(struct regmap *regmap, u32 attr,
 			*val = regval >> (7 - channel) & 0x01;
 			return 0;
 		}
-		}
 	} else if (channel == 5 || channel == 6) {
 		switch (attr) {
-		case hwmon_in_max_alarm: {
+		case hwmon_in_max_alarm:
 			err = regmap_read(regmap, PMIC5000_REG_OVER_VOLT_IN,
 					  &regval);
 			if (err)
 				return err;
 			*val = regval >> (channel - 4) & 0x01;
 			return 0;
-		}
 		}
 	}
 
@@ -499,6 +495,8 @@ static int pmic5000_read_string(struct device *dev,
 		*str = pmic5000_voltage_labels[channel];
 	else
 		return -EOPNOTSUPP;
+
+	return 0;
 }
 
 static int pmic5000_write_interval(struct regmap *regmap, long val)
@@ -770,7 +768,7 @@ static int pmic5000_i2c_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
-	hwmon_dev = devm_hwmon_device_register_with_info(dev, "pmic5000", data,
+	hwmon_dev = devm_hwmon_device_register_with_info(dev, "pmic5000", regmap,
 							 &pmic5000_chip_info, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
